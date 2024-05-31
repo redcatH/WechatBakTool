@@ -13,6 +13,7 @@ using WechatBakTool.ViewModel;
 using System.Security.Policy;
 using System.Windows;
 using System.Xml.Linq;
+using WechatBakTool.DBExtensions;
 
 namespace WechatBakTool.Export
 {
@@ -52,10 +53,30 @@ namespace WechatBakTool.Export
 
         public bool SetMsg(WXUserReader reader, WXContact contact,WorkspaceViewModel viewModel, DatetimePickerViewModel dateModel)
         {
+            using var dbContext = GetDb.GetDbDbContext(Main2.CurrentUserBakConfig!.UserWorkspacePath);
+
+            
             if (Session == null)
                 throw new Exception("请初始化模版：Not Use InitTemplate");
 
             List<WXMsg>? msgList = reader.GetWXMsgs(contact.UserName, dateModel);
+            var c = dbContext.Contacts.SingleOrDefault(p => p.UserName == contact.UserName);
+            if (c == null)
+            {
+                c = new Contact
+                {
+                    Id = Guid.NewGuid(),
+                    UserName = contact.UserName,
+                    Alias = contact.Alias,
+                    NickName = contact.NickName,
+                    LastMsg = contact.LastMsg,
+                    Remark = contact.Remark,
+                    Messages = new List<Message>()
+                };
+                dbContext.Contacts.Add(c);
+                dbContext.SaveChanges();
+            }
+            
             if (msgList == null)
                 throw new Exception("获取消息失败，请确认数据库读取正常");
 
@@ -69,18 +90,48 @@ namespace WechatBakTool.Export
             bool err = false;
             int msgCount = 0;
 
+            
+            
             StreamWriter streamWriter = new StreamWriter(Path, true);
+            var messagess = new List<Message>();
             foreach (var msg in msgList)
             {
+                var message = new Message
+                {
+                    Id = Guid.NewGuid(),
+                    ContactId =c.Id,
+                    LocalId =msg.LocalId,
+                    MsgSequence =msg.MsgSequence,
+                    Type =msg.Type,
+                    SubType =msg.SubType,
+                    CreateTime =msg.CreateTime,
+                    IsSender =msg.IsSender,
+                    MsgSvrID =msg.MsgSvrID,
+                    StrTalker =msg.StrTalker,
+                    StrContent =msg.StrContent,
+                    DisplayContent =msg.DisplayContent,
+                    CompressContent =msg.CompressContent,
+                    BytesExtra = msg.BytesExtra,
+                    NickName = msg.NickName,
+                    ImageUrl = "",
+                    VideoUrl = "",
+                    EmojiUrl=""
+                };
+                
                 try
                 {
                     HtmlBody += string.Format("<div class=\"msg\"><p class=\"nickname\">{0} <span style=\"padding-left:10px;\">{1}</span></p>", msg.IsSender ? "我" : msg.NickName, TimeStampToDateTime(msg.CreateTime).ToString("yyyy-MM-dd HH:mm:ss"));
-
                     if (msg.Type == 1)
+                    {
                         HtmlBody += string.Format("<p class=\"content\">{0}</p></div>", msg.StrContent);
+                        message.BusinessType = MsgType.String;
+                        messagess.Add(message);
+                    }
                     else if (msg.Type == 3)
                     {
                         string? path = reader.GetAttachment(WXMsgType.Image, msg);
+                        message.ImageUrl = path;
+                        message.BusinessType = MsgType.Image;
                         if (path == null)
                         {
 #if DEBUG
@@ -88,23 +139,31 @@ namespace WechatBakTool.Export
                             File.AppendAllText("debug.log", string.Format("[D]{0} {1}:{2}\n", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), "Img Error Msg=>", JsonConvert.SerializeObject(msg)));
 #endif
                             HtmlBody += string.Format("<p class=\"content\">{0}</p></div>", "图片转换出现错误或文件不存在");
+                            messagess.Add(message);
                             continue;
                         }
                         HtmlBody += string.Format("<p class=\"content\"><img src=\"{0}\" style=\"max-height:1000px;max-width:1000px;\"/></p></div>", path);
+                        messagess.Add(message);
                     }
                     else if (msg.Type == 43)
                     {
                         string? path = reader.GetAttachment(WXMsgType.Video, msg);
+                        message.VideoUrl = path;
+                        message.BusinessType = MsgType.Video;
                         if (path == null)
                         {
                             HtmlBody += string.Format("<p class=\"content\">{0}</p></div>", "视频不存在");
+                            messagess.Add(message);
                             continue;
                         }
                         HtmlBody += string.Format("<p class=\"content\"><video controls style=\"max-height:300px;max-width:300px;\"><source src=\"{0}\" type=\"video/mp4\" /></video></p></div>", path);
+                        messagess.Add(message);
                     }
                     else if (msg.Type == 47)
                     {
                         string? path = reader.GetAttachment(WXMsgType.Emoji, msg);
+                        message.EmojiUrl = path;
+                        message.BusinessType = MsgType.Emoji;
                         if (path == null)
                         {
 #if DEBUG
@@ -112,24 +171,31 @@ namespace WechatBakTool.Export
                             File.AppendAllText("debug.log", string.Format("[D]{0} {1}:{2}\n", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), "Emoji Error Msg=>", JsonConvert.SerializeObject(msg)));
 #endif
                             HtmlBody += string.Format("<p class=\"content\">{0}</p></div>", "表情未预下载或加密表情");
+                            messagess.Add(message);
                             continue;
                         }
                         HtmlBody += string.Format("<p class=\"content\"><img src=\"{0}\" style=\"max-height:300px;max-width:300px;\"/></p></div>", path);
+                        messagess.Add(message);
                     }
                     else if (msg.Type == 49)
                     {
                         if (msg.SubType == 6 || msg.SubType == 40)
                         {
                             string? path = reader.GetAttachment(WXMsgType.File, msg);
+                            message.FileUrl = path;
+                            message.BusinessType = MsgType.XMLFile;
                             if (path == null)
                             {
                                 HtmlBody += string.Format("<p class=\"content\">{0}</p></div>", "文件不存在");
+                                messagess.Add(message);
                                 continue;
                             }
                             else
                             {
                                 HtmlBody += string.Format("<p class=\"content\">{0}</p><p><a href=\"{1}\">点击访问</a></p></div>", "文件：" + path, path);
+                                messagess.Add(message);
                             }
+                            
                         }
                         else if (msg.SubType == 19)
                         {
@@ -142,6 +208,9 @@ namespace WechatBakTool.Export
 
                                 byte[] data = target.Skip(0).Take(res).ToArray();
                                 string xml = Encoding.UTF8.GetString(data);
+                                message.XMLMergeText = xml;
+                                message.BusinessType = MsgType.XMLMerge;
+                                messagess.Add(message);
                                 if (!string.IsNullOrEmpty(xml))
                                 {
                                     xml = xml.Replace("\n", "");
@@ -200,6 +269,7 @@ namespace WechatBakTool.Export
                         }
                         else if (msg.SubType == 57)
                         {
+                            message.BusinessType = MsgType.XMLRefMsg;
                             using (var decoder = LZ4Decoder.Create(true, 64))
                             {
                                 byte[] target = new byte[10240];
@@ -209,6 +279,8 @@ namespace WechatBakTool.Export
 
                                 byte[] data = target.Skip(0).Take(res).ToArray();
                                 string xml = Encoding.UTF8.GetString(data);
+                                message.XMLRefText = xml;
+                                messagess.Add(message);
                                 if (!string.IsNullOrEmpty(xml))
                                 {
                                     xml = xml.Replace("\n", "");
@@ -227,7 +299,6 @@ namespace WechatBakTool.Export
                                         }
 
                                         HtmlBody += string.Format("<p class=\"content\">{0}</p>", title);
-
                                         XmlNode? type = xmlObj.DocumentElement.SelectSingleNode("/msg/appmsg/refermsg/type");
                                         if(type != null)
                                         {
@@ -235,15 +306,15 @@ namespace WechatBakTool.Export
                                             XmlNode? text = xmlObj.DocumentElement.SelectSingleNode("/msg/appmsg/refermsg/content");
                                             if(type.InnerText == "1" && source != null && text != null)
                                             {
-                                                HtmlBody += string.Format("<p class=\"content\">[引用]{0}:{1}</p>", source.InnerText, text.InnerText);
+                                                HtmlBody += string.Format("<p class=\"content\">[引用]{0}:{1}</p></div>", source.InnerText, text.InnerText);
                                             }
                                             else if(type.InnerText != "1" && source != null && text != null)
                                             {
-                                                HtmlBody += string.Format("<p class=\"content\">[引用]{0}:非文本消息类型-{1}</p>", source.InnerText, type);
+                                                HtmlBody += string.Format("<p class=\"content\">[引用]{0}:非文本消息类型-{1}</p></div>", source.InnerText, type);
                                             }
                                             else
                                             {
-                                                HtmlBody += string.Format("<p class=\"content\">未知的引用消息</p>");
+                                                HtmlBody += string.Format("<p class=\"content\">未知的引用消息</p></div>");
                                             }
                                         }
                                     }
@@ -252,15 +323,17 @@ namespace WechatBakTool.Export
                         }
                         else
                         {
+                            message.BusinessType = MsgType.XML;
                             using (var decoder = LZ4Decoder.Create(true, 64))
                             {
                                 byte[] target = new byte[10240];
                                 int res = 0;
                                 if (msg.CompressContent != null)
                                     res = LZ4Codec.Decode(msg.CompressContent, 0, msg.CompressContent.Length, target, 0, target.Length);
-
                                 byte[] data = target.Skip(0).Take(res).ToArray();
                                 string xml = Encoding.UTF8.GetString(data);
+                                message.XMLText = xml;
+                                messagess.Add(message);
                                 if (!string.IsNullOrEmpty(xml))
                                 {
                                     xml = xml.Replace("\n", "");
@@ -304,20 +377,27 @@ namespace WechatBakTool.Export
                     else if (msg.Type == 34)
                     {
                         string? path = reader.GetAttachment(WXMsgType.Audio, msg);
+                        message.AudioUrl = path;
+                        message.BusinessType = MsgType.Audio;
                         if (path == null)
                         {
                             HtmlBody += string.Format("<p class=\"content\">{0}</p></div>", "语音不存在");
                             continue;
                         }
                         HtmlBody += string.Format("<p class=\"content\"><audio controls src=\"{0}\"></audio></p></div>", path);
+                        messagess.Add(message);
                     }
                     else
                     {
                         HtmlBody += string.Format("<p class=\"content\">{0}</p></div>", "暂未支持的消息");
+                        message.BusinessType = MsgType.Unknow;
+                        messagess.Add(message);
                     }
                 }
                 catch(Exception ex)
                 {
+                    message.BusinessType = MsgType.UnknowError;
+                    messagess.Add(message);
                     err = true;
                     File.AppendAllText("Err.log", JsonConvert.SerializeObject(msg));
                     File.AppendAllText("Err.log", ex.ToString());
@@ -329,11 +409,15 @@ namespace WechatBakTool.Export
                     streamWriter.WriteLine(HtmlBody);
                     HtmlBody = "";
                     viewModel.ExportCount = msgCount.ToString();
+                    dbContext.Messages.AddRange(messagess);
+                    dbContext.SaveChanges();
+                    messagess = new List<Message>();
                 }
-                
             }
             if(msgCount % 50 != 0)
             {
+                dbContext.Messages.AddRange(messagess);
+                dbContext.SaveChanges();
                 streamWriter.WriteLine(HtmlBody);
                 HtmlBody = "";
                 viewModel.ExportCount = msgCount.ToString();
@@ -344,12 +428,21 @@ namespace WechatBakTool.Export
             }
             streamWriter.Close();
             streamWriter.Dispose();
+            dbContext.Dispose();
             return true;
         }
         private static DateTime TimeStampToDateTime(long timeStamp, bool inMilli = false)
         {
             DateTimeOffset dateTimeOffset = inMilli ? DateTimeOffset.FromUnixTimeMilliseconds(timeStamp) : DateTimeOffset.FromUnixTimeSeconds(timeStamp);
             return dateTimeOffset.LocalDateTime;
+        }
+
+        public void AddMsg(WXChatDBContext dbContext, Message msg)
+        {
+            if (!dbContext.Messages.Any(p => p.MsgSvrID == msg.MsgSvrID))
+            {
+                dbContext.Messages.Add(msg);
+            }
         }
     }
 }
